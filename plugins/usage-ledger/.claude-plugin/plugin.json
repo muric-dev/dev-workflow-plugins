@@ -1,0 +1,10 @@
+{
+  "name": "usage-ledger",
+  "version": "0.0.2",
+  "description": "Versioned per-project ledger of Claude Code tokens, list-price cost and active time, attributed by feature and phase.",
+  "author": {
+    "name": "muric-dev"
+  },
+  "repository": "https://github.com/muric-dev/dev-workflow-plugins",
+  "keywords": ["usage", "tokens", "cost", "ledger"]
+}

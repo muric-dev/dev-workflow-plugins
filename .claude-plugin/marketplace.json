@@ -1,0 +1,16 @@
+{
+  "name": "dev-workflow-plugins",
+  "owner": {
+    "name": "muric-dev"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for day-to-day development: skills, agents and hooks."
+  },
+  "plugins": [
+    {
+      "name": "usage-ledger",
+      "source": "./plugins/usage-ledger",
+      "description": "Versioned per-project ledger of Claude Code tokens, list-price cost and active time, attributed by feature and phase."
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/usage-ledger/scripts/ledger.py\" hook"
+          }
+        ]
+      }
+    ]
+  }
+}
