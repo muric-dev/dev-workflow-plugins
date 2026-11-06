@@ -13,8 +13,8 @@
       "description": "Versioned per-project ledger of Claude Code tokens, list-price cost and active time, attributed by feature and phase, and split into work and questions with optional categories."
     },
     {
-      "name": "commit-guard",
-      "source": "./plugins/commit-guard",
+      "name": "did-i-mess-up",
+      "source": "./plugins/did-i-mess-up",
       "description": "Git pre-commit hook for Flutter/Dart repos: blocks debug leftovers, unformatted files, analyze or test failures, and asks Haiku, formally, whether you messed up."
     }
   ]

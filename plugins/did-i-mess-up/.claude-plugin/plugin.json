@@ -1,0 +1,10 @@
+{
+  "name": "did-i-mess-up",
+  "version": "0.0.1",
+  "description": "Git pre-commit hook for Flutter/Dart repos: blocks debug leftovers, unformatted files, analyze or test failures, and asks Haiku, formally, whether you messed up.",
+  "author": {
+    "name": "muric-dev"
+  },
+  "repository": "https://github.com/muric-dev/dev-workflow-plugins",
+  "keywords": ["git", "pre-commit", "flutter", "review"]
+}
