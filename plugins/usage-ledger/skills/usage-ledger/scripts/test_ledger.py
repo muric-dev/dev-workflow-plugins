@@ -34,13 +34,14 @@ def tool_result(at, cwd):
             "message": {"role": "user", "content": [{"type": "tool_result"}]}}
 
 
-def call(msg, at, cwd, model=OPUS, usage=None, **line):
+def call(msg, at, cwd, model=OPUS, usage=None, tools=(), **line):
     base = {"input_tokens": 10, "output_tokens": 100, "cache_read_input_tokens": 1000,
             "output_tokens_details": {"thinking_tokens": 40},
             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 200}}
+    content = [{"type": "tool_use", "name": tool, "input": {"file_path": SECRET}} for tool in tools]
     return {"type": "assistant", "uuid": f"a{msg}{at}", "timestamp": stamp(at), "cwd": cwd, "effort": "high",
             "message": {"id": msg, "model": model, "usage": {**base, **(usage or {})},
-                        "content": [{"type": "text", "text": SECRET}]}, **line}
+                        "content": content or [{"type": "text", "text": SECRET}]}, **line}
 
 
 def turn(at, ms, cwd):
@@ -256,10 +257,13 @@ class Persistence(LedgerCase):
         self.sync()
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["generated_at"], "2000-01-01T00:00:00Z")
 
-    def test_record_fields_stay_inside_schema_one(self):
+    def test_record_fields_stay_inside_schema_two(self):
         self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd)])
-        record = self.sync()["questions"][0]
-        self.assertEqual(set(record), {"id", "session", "asked_at", "feature", "phase", "models", "usd", "active_seconds"})
+        doc = self.sync()
+        record = doc["questions"][0]
+        self.assertEqual(doc["schema"], 2)
+        self.assertEqual(set(record), {"id", "session", "asked_at", "feature", "phase", "kind", "category", "models",
+                                       "usd", "active_seconds"})
         self.assertEqual(set(record["models"][0]), {"model", "effort", "calls", "usd", *measure.TOKEN_FIELDS})
 
 
@@ -283,6 +287,83 @@ class Phases(LedgerCase):
     def test_question_with_no_phase_is_unassigned(self):
         self.transcript([human("q1", 0, self.cwd)])
         self.assertEqual(self.sync()["questions"][0]["feature"], common.UNASSIGNED)
+
+
+class Kind(LedgerCase):
+    def kinds(self):
+        return [q["kind"] for q in self.sync()["questions"]]
+
+    def test_a_turn_that_edits_files_is_work_and_one_that_only_reads_is_a_question(self):
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Read", "Edit"]),
+                         human("q2", 10, self.cwd), call("m2", 11, self.cwd, tools=["Read", "Grep"])])
+        self.assertEqual(self.kinds(), ["work", "question"])
+
+    def test_an_edit_in_an_earlier_line_of_the_same_message_still_counts(self):
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Write"]),
+                         call("m1", 2, self.cwd)])
+        self.assertEqual(self.kinds(), ["work"])
+
+    def test_a_subagent_edit_makes_the_question_work(self):
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Agent"])])
+        self.subagent([call("sub", 5, self.cwd, tools=["Edit"])])
+        self.assertEqual(self.kinds(), ["work"])
+
+    def test_bash_alone_is_a_question(self):
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Bash"])])
+        self.assertEqual(self.kinds(), ["question"])
+
+    def test_a_saved_record_from_schema_one_reads_as_unknown(self):
+        (self.root / "ledger" / "usage.json").write_text(json.dumps({"questions": [
+            {"id": "old", "session": "s0", "asked_at": stamp(0), "feature": "F0", "phase": "plan",
+             "models": [], "usd": 0, "active_seconds": 0}]}), encoding="utf-8")
+        record = self.sync()["questions"][0]
+        self.assertEqual((record["kind"], record["category"]), ("unknown", None))
+
+    def test_tool_input_never_reaches_the_files(self):
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Edit"])])
+        self.sync()
+        for name in ("ledger/usage.json", "LEDGER.md"):
+            self.assertNotIn(SECRET, (self.root / name).read_text(encoding="utf-8"))
+
+
+class Categories(LedgerCase):
+    def ledger(self, *args):
+        return ledger.main(["--root", self.cwd, *args])
+
+    def categories(self):
+        return [q["category"] for q in self.sync()["questions"]]
+
+    def test_a_category_lasts_until_the_next_category(self):
+        self.ledger("category", "review", "--at", stamp(10))
+        self.ledger("category", "tooling", "--at", stamp(30))
+        self.transcript([human("q0", 0, self.cwd), human("q1", 20, self.cwd), human("q2", 40, self.cwd)])
+        self.assertEqual(self.categories(), [None, "review", "tooling"])
+
+    def test_a_phase_row_ends_the_category(self):
+        self.ledger("category", "review", "--at", stamp(10))
+        self.ledger("phase", "F1", "build", "--at", stamp(30))
+        self.transcript([human("q1", 20, self.cwd), human("q2", 40, self.cwd)])
+        self.assertEqual(self.categories(), ["review", None])
+
+    def test_none_clears_the_category(self):
+        self.ledger("category", "review", "--at", stamp(10))
+        self.ledger("category", "none", "--at", stamp(30))
+        self.transcript([human("q1", 20, self.cwd), human("q2", 40, self.cwd)])
+        self.assertEqual(self.categories(), ["review", None])
+
+    def test_saved_category_stays_without_a_covering_row(self):
+        self.transcript([human("q1", 0, self.cwd)])
+        self.sync()
+        path = self.root / "ledger" / "usage.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["questions"][0]["category"] = "review"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        self.assertEqual(self.categories(), ["review"])
+
+    def test_a_comma_is_rejected(self):
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(self.ledger("category", "a,b"), 1)
+        self.assertFalse((self.root / "ledger" / "categories.csv").exists())
 
 
 class HookAndInit(LedgerCase):
@@ -311,6 +392,33 @@ class HookAndInit(LedgerCase):
         (self.root / "ledger" / "usage.json").write_text("not json", encoding="utf-8")
         self.assertEqual(self.run_hook("garbage").returncode, 0)
         self.assertEqual(self.run_hook(json.dumps({"cwd": self.cwd})).returncode, 0)
+
+    def test_hook_warns_when_a_phase_was_set_after_the_prompt(self):
+        (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
+        ledger.main(["--root", self.cwd, "phase", "F1", "plan", "--at", stamp(0)])
+        self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd)])
+        ledger.main(["--root", self.cwd, "phase", "F1", "build", "--at", stamp(12)])
+        done = self.run_hook(json.dumps({"cwd": self.cwd, "session_id": "s1"}))
+        message = json.loads(done.stdout)["systemMessage"]
+        self.assertEqual(done.returncode, 0)
+        self.assertIn("phase F1 build", message)
+        self.assertIn("stays F1 plan", message)
+        self.assertIn(f"--at {stamp(10)[:19]}Z", message)
+
+    def test_hook_is_quiet_when_every_row_predates_the_prompt(self):
+        (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
+        ledger.main(["--root", self.cwd, "phase", "F1", "plan", "--at", stamp(0)])
+        ledger.main(["--root", self.cwd, "category", "review", "--at", stamp(5)])
+        self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd)])
+        done = self.run_hook(json.dumps({"cwd": self.cwd, "session_id": "s1"}))
+        self.assertEqual(done.stdout, "")
+
+    def test_hook_warns_about_a_late_category_too(self):
+        (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
+        self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd)])
+        ledger.main(["--root", self.cwd, "category", "review", "--at", stamp(12)])
+        done = self.run_hook(json.dumps({"cwd": self.cwd, "session_id": "s1"}))
+        self.assertIn("category review", json.loads(done.stdout)["systemMessage"])
 
     def test_init_leaves_settings_alone_because_the_plugin_owns_the_hook(self):
         ledger.main(["--root", self.cwd, "init"])
@@ -345,8 +453,23 @@ class Board(LedgerCase):
         self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd),
                          human("q2", 40, self.cwd), call("m2", 41, self.cwd), call("m3", 42, self.cwd)])
         self.sync()
-        names = [line.split()[0] for line in self.board().splitlines() if line.startswith(("big", "cheap", "  "))]
-        self.assertEqual(names, ["big", "build", "cheap", "plan"])
+        lines = self.board().split("\n\n")[1].splitlines()[1:]
+        self.assertEqual([line.split()[0] for line in lines], ["big", "build", "question", "cheap", "plan", "question"])
+
+    def test_board_splits_each_phase_by_kind_and_category(self):
+        ledger.main(["--root", self.cwd, "phase", "F1", "build", "--at", stamp(0)])
+        ledger.main(["--root", self.cwd, "category", "review", "--at", stamp(20)])
+        self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd, tools=["Edit"]),
+                         human("q2", 30, self.cwd), call("m2", 31, self.cwd)])
+        self.sync()
+        text = self.board()
+        self.assertIn("    work ", text)
+        self.assertIn("    question/review ", text)
+        kinds = text.split("\n\n")[2].splitlines()
+        self.assertEqual(kinds[0].split()[0:3], ["Kind", "/", "category"])
+        self.assertEqual(sorted(line.split()[0] for line in kinds[1:]), ["question/review", "work"])
+        ledger_md = (self.root / "LEDGER.md").read_text(encoding="utf-8")
+        self.assertIn("| F1 | build | question/review |", ledger_md)
 
     def test_board_totals_match_the_ledger_and_hold_no_prompt_text(self):
         self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd)])

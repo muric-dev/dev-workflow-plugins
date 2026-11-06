@@ -4,7 +4,8 @@ Merge rules:
 - A saved record whose transcript is gone stays as it was.
 - A fresh record replaces the saved one, unless it has fewer calls: part of the
   transcript was cleaned up, and the saved numbers are the better ones.
-- feature and phase come from phases.attribute.
+- feature and phase come from phases.attribute, category from phases.categorize.
+- A saved record from before schema 2 has no kind: it reads as "unknown".
 - The file is rewritten only when something other than generated_at changed.
 
 Owns the layout of usage.json. A change to it bumps SCHEMA and the record
@@ -16,7 +17,7 @@ import measure
 import phases
 from common import USAGE_FILE, now_iso, parse_ts, write_atomic
 
-SCHEMA = 1
+SCHEMA = 2
 
 
 def read_doc(root):
@@ -48,13 +49,17 @@ def prices_block(old_doc, records, prices):
     return {"source": prices["source"], "as_of": prices["as_of"], "per_mtok": dict(sorted(per_mtok.items()))}
 
 
-def build_doc(old_doc, fresh, phase_rows, prices):
+def build_doc(old_doc, fresh, phase_rows, category_rows, prices):
     by_id = {record["id"]: record for record in old_doc.get("questions", [])}
+    for record in by_id.values():
+        record.setdefault("kind", measure.UNKNOWN_KIND)
+        record.setdefault("category", None)
     for record in fresh:
         prior = by_id.get(record["id"])
         if prior and call_count(record) < call_count(prior):
             continue
         record["feature"], record["phase"] = phases.attribute(record, phase_rows, prior)
+        record["category"] = phases.categorize(record, category_rows, phase_rows, prior)
         by_id[record["id"]] = record
     records = sorted(by_id.values(), key=lambda record: parse_ts(record["asked_at"]))
     return {

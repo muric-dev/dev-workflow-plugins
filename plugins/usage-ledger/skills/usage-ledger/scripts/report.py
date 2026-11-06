@@ -1,7 +1,8 @@
 """Step 5. usage.json -> what people read.
 
 - LEDGER.md: Markdown tables committed with the project, rewritten on every sync.
-- board(): the console view `report` prints, overall and per feature and phase.
+- board(): the console view `report` prints, overall, per feature and phase, and per
+  kind (work or question) and category.
 
 Both read the same rows from summarize(), so their numbers always agree, and
 neither holds data of its own.
@@ -26,15 +27,24 @@ def add_row(rows, key, question, model=None):
     row["active"] += question["active_seconds"] if model is None else 0
 
 
+def label(question):
+    """kind, or kind/category: question, work, question/review."""
+    kind = question.get("kind") or "unknown"
+    return f"{kind}/{question['category']}" if question.get("category") else kind
+
+
 def summarize(doc):
-    """Rows keyed by feature, by (feature, phase), and by (model, effort)."""
-    by_feature, by_phase, by_model = {}, {}, {}
+    """Rows keyed by feature, by (feature, phase), by (feature, phase, label), by label,
+    and by (model, effort)."""
+    by_feature, by_phase, by_kind, by_label, by_model = {}, {}, {}, {}, {}
     for question in doc["questions"]:
         add_row(by_feature, question["feature"], question)
         add_row(by_phase, (question["feature"], question["phase"]), question)
+        add_row(by_kind, (question["feature"], question["phase"], label(question)), question)
+        add_row(by_label, (label(question),), question)
         for model in question["models"]:
             add_row(by_model, (model["model"], model["effort"]), question, model)
-    return by_feature, by_phase, by_model
+    return by_feature, by_phase, by_kind, by_label, by_model
 
 
 # LEDGER.md
@@ -52,7 +62,7 @@ def table(title, labels, rows, with_time):
 
 
 def render(doc):
-    _, by_phase, by_model = summarize(doc)
+    _, by_phase, by_kind, _, by_model = summarize(doc)
     totals = doc["totals"]
     return "\n".join([
         "# Usage ledger",
@@ -64,6 +74,8 @@ def render(doc):
         f"(prices as of {doc['prices']['as_of']}), not an invoice.",
         "",
         *table("By feature and phase", ["Feature", "Phase"], by_phase, True),
+        "",
+        *table("By kind and category", ["Feature", "Phase", "Kind / category"], by_kind, True),
         "",
         *table("By model", ["Model", "Effort"], by_model, False),
         "",
@@ -120,17 +132,23 @@ def board(doc):
     ]
     if not doc["questions"]:
         return "\n".join([*lines, "", "No questions recorded yet."])
-    by_feature, by_phase, by_model = summarize(doc)
+    by_feature, by_phase, by_kind, by_label, by_model = summarize(doc)
     features = []
     for feature, row in most_expensive_first(by_feature):
         features.append((feature, row))
         phases = {phase: row for (owner, phase), row in by_phase.items() if owner == feature}
-        features += [(f"  {phase}", row) for phase, row in most_expensive_first(phases)]
+        for phase, phase_row in most_expensive_first(phases):
+            features.append((f"  {phase}", phase_row))
+            kinds = {kind: row for (owner, step, kind), row in by_kind.items() if (owner, step) == (feature, phase)}
+            features += [(f"    {kind}", row) for kind, row in most_expensive_first(kinds)]
+    labels = [(name, row) for (name,), row in most_expensive_first(by_label)]
     models = [(f"{model} ({effort})", row) for (model, effort), row in most_expensive_first(by_model)]
     return "\n".join([
         *lines,
         "",
-        *board_table("Feature / phase", features, totals["usd"], True),
+        *board_table("Feature / phase / kind", features, totals["usd"], True),
+        "",
+        *board_table("Kind / category", labels, totals["usd"], True),
         "",
         *board_table("Model (effort)", models, totals["usd"], False),
     ])

@@ -10,7 +10,8 @@ How data flows on `sync`. sync() below runs these steps, one line each:
     transcripts.py  ~/.claude/projects/**/*.jsonl      -> questions: calls grouped per prompt
     measure.py      question + assets/prices.json      -> record: tokens, USD, active time
     document.py     records + saved usage.json         -> new ledger/usage.json
-                    + phases.py (ledger/phases.csv)       (feature and phase per record)
+                    + phases.py (ledger/phases.csv,       (feature, phase and category per record)
+                      ledger/categories.csv)
     report.py       usage.json                         -> LEDGER.md, and the console board of `report`
 
 common.py holds what every step shares: file locations, time, atomic writes.
@@ -26,6 +27,7 @@ Where to change things:
     New table or column in LEDGER.md             report.render
     New view in the console board                report.board
     New command                                  a cmd_* function here, registered in parse_args
+    What counts as work instead of a question    measure.EDIT_TOOLS
 """
 import argparse
 import json
@@ -52,7 +54,7 @@ def sync(root, only_session=None):
     questions = transcripts.read_questions(project.project_paths(root), only_session)
     fresh = [measure.build_record(question, prices) for question in questions.values()]
     old_doc = document.read_doc(root)
-    doc = document.build_doc(old_doc, fresh, phases.read_phases(root), prices)
+    doc = document.build_doc(old_doc, fresh, phases.read_phases(root), phases.read_categories(root), prices)
     changed = document.save_doc(root, old_doc, doc)
     report.write_report(root, doc)
     for model in measure.unpriced_models(fresh, prices):
@@ -91,6 +93,17 @@ def cmd_phase(args):
     return 0
 
 
+def cmd_category(args):
+    timestamp = args.at or now_iso()
+    try:
+        phases.add_category(args.root, timestamp, args.category)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(f"category {args.category} active from {timestamp}, until the next category or phase")
+    return 0
+
+
 def cmd_alias(args):
     old_path = args.old_path.rstrip("/")
     project.add_alias(args.root, old_path)
@@ -118,13 +131,39 @@ def cmd_init(args):
     return 0
 
 
+def late_rows_warning(root, doc, session):
+    """A warning when a phase or category was set after this turn's prompt, or None.
+
+    Those rows start with the next prompt, so the one that just ran keeps the
+    attribution it had. Often that is the plan: the warning only says so.
+    """
+    records = [record for record in doc["questions"] if record["session"] == session]
+    if not records:
+        return None
+    record = max(records, key=lambda item: item["asked_at"])
+    prompt_at = record["asked_at"]
+    late = [f"phase {feature} {phase}" for _, feature, phase in phases.written_after(phases.read_phases(root), prompt_at)]
+    late += [f"category {category}" for _, category in phases.written_after(phases.read_categories(root), prompt_at)]
+    if not late:
+        return None
+    return (f"usage-ledger: {', '.join(late)} was set after this turn's prompt, so it applies from the next "
+            f"prompt and this one stays {record['feature']} {record['phase']}. If this turn belongs to it too, "
+            f"re-run it with --at {prompt_at[:19]}Z, then sync.")
+
+
 def cmd_hook(_args):
-    """Never blocks the agent: exit 2 on Stop would send it back to work."""
+    """Never blocks the agent: exit 2 on Stop would send it back to work.
+
+    Prints a `systemMessage` for the user when late_rows_warning finds something.
+    """
     try:
         payload = json.load(sys.stdin)
         root = project.find_root(payload.get("cwd") or Path.cwd())
         if root is not None:
-            sync(root, payload.get("session_id"))
+            _, doc = sync(root, payload.get("session_id"))
+            warning = late_rows_warning(root, doc, payload.get("session_id"))
+            if warning:
+                print(json.dumps({"systemMessage": warning}))
     except Exception as error:  # noqa: BLE001 - a broken ledger must not stop the session.
         print(f"usage-ledger: {error}", file=sys.stderr)
     return 0
@@ -145,6 +184,10 @@ def parse_args(argv):
     phase.add_argument("phase")
     phase.add_argument("--at", help="ISO timestamp, default now")
     phase.set_defaults(run=cmd_phase)
+    category = commands.add_parser("category", help="label questions from now until the next category or phase")
+    category.add_argument("category", help=f"any label, or {phases.NO_CATEGORY} to clear")
+    category.add_argument("--at", help="ISO timestamp, default now")
+    category.set_defaults(run=cmd_category)
     alias = commands.add_parser("alias", help="count a former project path as this project")
     alias.add_argument("old_path")
     alias.set_defaults(run=cmd_alias)

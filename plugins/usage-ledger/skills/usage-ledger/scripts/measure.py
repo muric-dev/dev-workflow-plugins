@@ -2,7 +2,7 @@
 
 Input: a question from transcripts.py and the price table in assets/prices.json.
 Output: one record per question, with one entry per (model, effort):
-    {"id", "session", "asked_at", "feature", "phase",
+    {"id", "session", "asked_at", "feature", "phase", "kind", "category",
      "models": [{"model", "effort", "calls", <TOKEN_FIELDS>, "usd"}],
      "usd", "active_seconds"}
 
@@ -17,6 +17,11 @@ from common import UNASSIGNED
 
 PRICES_FILE = Path(__file__).resolve().parent.parent / "assets" / "prices.json"
 IDLE_CAP_SECONDS = 300
+
+# A question whose turn called one of these changed files: it is work. Bash is left
+# out because a sed and a grep look the same from the tool name.
+EDIT_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
+WORK, QUESTION, UNKNOWN_KIND = "work", "question", "unknown"
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -91,6 +96,10 @@ def active_seconds(question):
     return round(sum(min(gap, IDLE_CAP_SECONDS) for gap in gaps))
 
 
+def kind_of(question):
+    return WORK if question["tools"] & EDIT_TOOLS else QUESTION
+
+
 def build_record(question, prices):
     groups = {}
     for line in question["calls"].values():
@@ -115,6 +124,8 @@ def build_record(question, prices):
         "asked_at": question["asked_at"],
         "feature": UNASSIGNED,  # Set by document.build_doc from phases.csv.
         "phase": UNASSIGNED,
+        "kind": kind_of(question),
+        "category": None,  # Set by document.build_doc from categories.csv.
         "models": list(groups.values()),
         "usd": round(total, 4),
         "active_seconds": active_seconds(question),

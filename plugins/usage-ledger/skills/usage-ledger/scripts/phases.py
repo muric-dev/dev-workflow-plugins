@@ -1,15 +1,24 @@
-"""Owns ledger/phases.csv: the timeline that says which feature and phase work belongs to.
+"""Owns the two attribution timelines: ledger/phases.csv and ledger/categories.csv.
 
-Each row means "from this timestamp on, work is <feature> <phase>":
+phases.csv says which feature and phase work belongs to. Each row means "from
+this timestamp on, work is <feature> <phase>":
     ts,feature,phase
     2026-11-02T10:00:00Z,checkout,plan
 
-A record takes the last row at or before its asked_at. With no such row it keeps
-its saved attribution, else it stays unassigned.
+categories.csv labels questions inside a phase (review, tooling, ...). Each row
+means "from this timestamp on, questions are <category>", until the next
+category row or the next phase row, whichever comes first. `none` clears it:
+    ts,category
+    2026-11-02T10:20:00Z,review
+
+A record takes the last row at or before its asked_at. With no row at all it
+keeps its saved attribution, else it stays unassigned (or uncategorized).
 """
-from common import PHASES_FILE, UNASSIGNED, parse_ts, write_atomic
+from common import CATEGORIES_FILE, PHASES_FILE, UNASSIGNED, parse_ts, write_atomic
 
 HEADER = "ts,feature,phase\n"
+CATEGORY_HEADER = "ts,category\n"
+NO_CATEGORY = "none"
 
 
 def ensure_file(root):
@@ -18,32 +27,48 @@ def ensure_file(root):
         write_atomic(path, HEADER)
 
 
-def add_phase(root, timestamp, feature, phase):
-    """Append a row. Raises ValueError on a bad timestamp or a value with a comma."""
-    if "," in feature or "," in phase:
-        raise ValueError("feature and phase cannot contain commas")
+def append_row(root, file, header, timestamp, values):
+    """Raises ValueError on a bad timestamp or a value with a comma."""
+    if any("," in value for value in values):
+        raise ValueError("values cannot contain commas")
     parse_ts(timestamp)
-    path = root / PHASES_FILE
-    existing = path.read_text(encoding="utf-8") if path.exists() else HEADER
-    write_atomic(path, f"{existing}{timestamp},{feature},{phase}\n")
+    path = root / file
+    existing = path.read_text(encoding="utf-8") if path.exists() else header
+    write_atomic(path, existing + ",".join([timestamp, *values]) + "\n")
 
 
-def read_phases(root):
-    """Rows as (datetime, feature, phase), oldest first.
+def add_phase(root, timestamp, feature, phase):
+    append_row(root, PHASES_FILE, HEADER, timestamp, [feature, phase])
 
-    Rows without three fields are skipped. A bad timestamp raises, so a typo stops
-    the sync instead of silently attributing work to the wrong feature.
+
+def add_category(root, timestamp, category):
+    append_row(root, CATEGORIES_FILE, CATEGORY_HEADER, timestamp, [category])
+
+
+def read_rows(root, file, fields):
+    """Rows as (datetime, *values), oldest first.
+
+    Rows with the wrong number of fields are skipped. A bad timestamp raises, so
+    a typo stops the sync instead of silently attributing work to the wrong place.
     """
     try:
-        text = (root / PHASES_FILE).read_text(encoding="utf-8")
+        text = (root / file).read_text(encoding="utf-8")
     except OSError:
         return []
     rows = []
     for line in text.splitlines()[1:]:
-        fields = [field.strip() for field in line.split(",")]
-        if len(fields) == 3 and fields[0]:
-            rows.append((parse_ts(fields[0]), fields[1], fields[2]))
+        values = [value.strip() for value in line.split(",")]
+        if len(values) == fields and values[0]:
+            rows.append((parse_ts(values[0]), *values[1:]))
     return sorted(rows, key=lambda row: row[0])
+
+
+def read_phases(root):
+    return read_rows(root, PHASES_FILE, 3)
+
+
+def read_categories(root):
+    return read_rows(root, CATEGORIES_FILE, 2)
 
 
 def attribute(record, phases, prior):
@@ -55,3 +80,20 @@ def attribute(record, phases, prior):
     if prior:
         return prior["feature"], prior["phase"]
     return UNASSIGNED, UNASSIGNED
+
+
+def categorize(record, categories, phases, prior):
+    """The record's category, or None. A phase row after the category row ends it."""
+    asked_at = parse_ts(record["asked_at"])
+    active = [row for row in categories if row[0] <= asked_at]
+    if not active:
+        return (prior or {}).get("category")
+    since, category = active[-1]
+    if category == NO_CATEGORY or any(since < row[0] <= asked_at for row in phases):
+        return None
+    return category
+
+
+def written_after(rows, asked_at):
+    """Rows set after `asked_at`: they don't apply to the question asked then."""
+    return [row for row in rows if row[0] > parse_ts(asked_at)]

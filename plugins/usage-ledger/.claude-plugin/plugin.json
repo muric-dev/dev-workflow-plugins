@@ -1,7 +1,7 @@
 {
   "name": "usage-ledger",
-  "version": "0.0.2",
-  "description": "Versioned per-project ledger of Claude Code tokens, list-price cost and active time, attributed by feature and phase.",
+  "version": "0.0.3",
+  "description": "Versioned per-project ledger of Claude Code tokens, list-price cost and active time, attributed by feature and phase, and split into work and questions with optional categories.",
   "author": {
     "name": "muric-dev"
   },

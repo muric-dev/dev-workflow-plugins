@@ -7,6 +7,7 @@ from pathlib import Path
 # Files kept inside the project, relative to its root. Each has one owner module.
 USAGE_FILE = Path("ledger/usage.json")  # saved records, written by document.py
 PHASES_FILE = Path("ledger/phases.csv")  # feature/phase timeline, owned by phases.py
+CATEGORIES_FILE = Path("ledger/categories.csv")  # question category timeline, owned by phases.py
 REPORT_FILE = Path("LEDGER.md")  # human summary, written by report.py
 
 UNASSIGNED = "unassigned"

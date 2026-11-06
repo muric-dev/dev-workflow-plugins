@@ -5,7 +5,7 @@ transcripts in <session>/subagents/**/*.jsonl.
 
 Output: {question_id: question}, where a question is
     {"id", "session", "asked_at", "stamps": [datetime], "turn_ms": int,
-     "calls": {message_id: assistant line}}
+     "calls": {message_id: assistant line}, "tools": {tool name}}
 
 A question starts at each human prompt in the main transcript. Every later line,
 from the main transcript or a subagent, belongs to it until the next prompt.
@@ -99,7 +99,17 @@ def new_question(question_id, session, asked_at):
         "stamps": [],
         "turn_ms": 0,
         "calls": {},
+        "tools": set(),
     }
+
+
+def tool_names(line):
+    """Names of the tools an assistant line called. Names only, never their input."""
+    content = (line.get("message") or {}).get("content")
+    if line.get("type") != "assistant" or not isinstance(content, list):
+        return set()
+    return {block["name"] for block in content
+            if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("name"), str)}
 
 
 def split_questions(lines, session):
@@ -119,6 +129,8 @@ def split_questions(lines, session):
             current = new_question(session, session, line["timestamp"])
             questions.append(current)
         current["stamps"].append(parse_ts(line["timestamp"]))
+        # Every line of a message counts here: each one may hold a different content block.
+        current["tools"] |= tool_names(line)
         if is_call(line):
             # A message is logged once per content block: the last line has the final usage.
             current["calls"][line["message"]["id"]] = line
@@ -147,4 +159,5 @@ def read_questions(paths, only_session=None):
             question["calls"] = fresh
             target = questions.setdefault(question["id"], question)
             target["calls"].update(fresh)
+            target["tools"] |= question["tools"]
     return questions
