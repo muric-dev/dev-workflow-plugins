@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 import ledger  # noqa: E402
 import measure  # noqa: E402
+import report  # noqa: E402
 import transcripts  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parent / "ledger.py"
@@ -242,7 +243,7 @@ class Persistence(LedgerCase):
     def test_no_prompt_text_or_paths_reach_the_files(self):
         self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd)])
         self.sync()
-        for name in ("ledger/usage.json", "LEDGER.md"):
+        for name in ("ledger/usage.json", "ledger/LEDGER.md"):
             text = (self.root / name).read_text(encoding="utf-8")
             self.assertNotIn(SECRET, text)
             self.assertNotIn(self.cwd, text)
@@ -265,6 +266,52 @@ class Persistence(LedgerCase):
         self.assertEqual(set(record), {"id", "session", "asked_at", "feature", "phase", "kind", "category", "models",
                                        "usd", "active_seconds"})
         self.assertEqual(set(record["models"][0]), {"model", "effort", "calls", "usd", *measure.TOKEN_FIELDS})
+
+
+class ReportMigration(LedgerCase):
+    def setUp(self):
+        super().setUp()
+        self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd)])
+        self.legacy = self.root / "LEDGER.md"
+        self.report = self.root / "ledger" / "LEDGER.md"
+
+    def test_sync_writes_the_report_inside_ledger(self):
+        self.sync()
+        self.assertIn(report.GENERATED_MARKER, self.report.read_text(encoding="utf-8"))
+        self.assertFalse(self.legacy.exists())
+
+    def test_a_generated_root_report_is_moved_when_ledger_has_none(self):
+        self.legacy.write_text(f"{report.GENERATED_MARKER}\nold\n", encoding="utf-8")
+        self.assertIn("moved", ledger.sync(self.root)[2])
+        self.assertFalse(self.legacy.exists())
+        self.assertIn("# Usage ledger", self.report.read_text(encoding="utf-8"))
+
+    def test_a_generated_root_report_is_removed_when_ledger_has_one(self):
+        self.legacy.write_text(f"{report.GENERATED_MARKER}\nroot\n", encoding="utf-8")
+        self.report.write_text(f"{report.GENERATED_MARKER}\nledger\n", encoding="utf-8")
+        self.assertIn("removed", ledger.sync(self.root)[2])
+        self.assertFalse(self.legacy.exists())
+        self.assertIn("# Usage ledger", self.report.read_text(encoding="utf-8"))
+
+    def test_a_hand_written_ledger_report_survives_the_migration_and_every_sync(self):
+        self.legacy.write_text(f"{report.GENERATED_MARKER}\nroot\n", encoding="utf-8")
+        self.report.write_text("# Why I track this\n", encoding="utf-8")
+        self.sync()
+        self.sync()
+        self.assertFalse(self.legacy.exists())
+        self.assertEqual(self.report.read_text(encoding="utf-8"), "# Why I track this\n")
+
+    def test_a_root_ledger_md_in_another_encoding_neither_breaks_sync_nor_is_touched(self):
+        self.legacy.write_bytes(b"# Libro mayor\n\xf1and\xfa\n")
+        self.assertIsNone(ledger.sync(self.root)[2])
+        self.assertEqual(self.legacy.read_bytes(), b"# Libro mayor\n\xf1and\xfa\n")
+        self.assertIn(report.GENERATED_MARKER, self.report.read_text(encoding="utf-8"))
+
+    def test_a_root_ledger_md_the_plugin_did_not_write_is_left_alone(self):
+        self.legacy.write_text("# My own ledger\nnotes\n", encoding="utf-8")
+        self.assertIsNone(ledger.sync(self.root)[2])
+        self.assertEqual(self.legacy.read_text(encoding="utf-8"), "# My own ledger\nnotes\n")
+        self.assertIn(report.GENERATED_MARKER, self.report.read_text(encoding="utf-8"))
 
 
 class Phases(LedgerCase):
@@ -322,7 +369,7 @@ class Kind(LedgerCase):
     def test_tool_input_never_reaches_the_files(self):
         self.transcript([human("q1", 0, self.cwd), call("m1", 1, self.cwd, tools=["Edit"])])
         self.sync()
-        for name in ("ledger/usage.json", "LEDGER.md"):
+        for name in ("ledger/usage.json", "ledger/LEDGER.md"):
             self.assertNotIn(SECRET, (self.root / name).read_text(encoding="utf-8"))
 
 
@@ -405,6 +452,28 @@ class HookAndInit(LedgerCase):
         self.assertIn("stays F1 plan", message)
         self.assertIn(f"--at {stamp(10)[:19]}Z", message)
 
+    def test_hook_reports_the_move_and_a_late_row_in_one_message(self):
+        (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
+        (self.root / "LEDGER.md").write_text(f"{report.GENERATED_MARKER}\n", encoding="utf-8")
+        self.transcript([human("q1", 10, self.cwd), call("m1", 11, self.cwd)])
+        ledger.main(["--root", self.cwd, "phase", "F1", "build", "--at", stamp(12)])
+        done = self.run_hook(json.dumps({"cwd": self.cwd, "session_id": "s1"}))
+        lines = json.loads(done.stdout)["systemMessage"].splitlines()
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(len(lines), 2)
+        self.assertIn("moved LEDGER.md to ledger/LEDGER.md", lines[0])
+        self.assertIn("phase F1 build", lines[1])
+        self.assertFalse((self.root / "LEDGER.md").exists())
+
+    def test_hook_reports_a_removed_root_report(self):
+        (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
+        (self.root / "LEDGER.md").write_text(f"{report.GENERATED_MARKER}\nroot\n", encoding="utf-8")
+        (self.root / "ledger" / "LEDGER.md").write_text("ledger\n", encoding="utf-8")
+        done = self.run_hook(json.dumps({"cwd": self.cwd, "session_id": "s1"}))
+        self.assertIn("removed LEDGER.md", json.loads(done.stdout)["systemMessage"])
+        self.assertFalse((self.root / "LEDGER.md").exists())
+        self.assertEqual((self.root / "ledger" / "LEDGER.md").read_text(encoding="utf-8"), "ledger\n")
+
     def test_hook_is_quiet_when_every_row_predates_the_prompt(self):
         (self.root / "ledger" / "usage.json").write_text("{}", encoding="utf-8")
         ledger.main(["--root", self.cwd, "phase", "F1", "plan", "--at", stamp(0)])
@@ -468,7 +537,7 @@ class Board(LedgerCase):
         kinds = text.split("\n\n")[2].splitlines()
         self.assertEqual(kinds[0].split()[0:3], ["Kind", "/", "category"])
         self.assertEqual(sorted(line.split()[0] for line in kinds[1:]), ["question/review", "work"])
-        ledger_md = (self.root / "LEDGER.md").read_text(encoding="utf-8")
+        ledger_md = (self.root / "ledger" / "LEDGER.md").read_text(encoding="utf-8")
         self.assertIn("| F1 | build | question/review |", ledger_md)
 
     def test_board_totals_match_the_ledger_and_hold_no_prompt_text(self):

@@ -12,7 +12,8 @@ How data flows on `sync`. sync() below runs these steps, one line each:
     document.py     records + saved usage.json         -> new ledger/usage.json
                     + phases.py (ledger/phases.csv,       (feature, phase and category per record)
                       ledger/categories.csv)
-    report.py       usage.json                         -> LEDGER.md, and the console board of `report`
+    report.py       usage.json                         -> ledger/LEDGER.md, and the console board of `report`
+                                                          (first moves or removes a root LEDGER.md from 0.0.4 or older)
 
 common.py holds what every step shares: file locations, time, atomic writes.
 
@@ -41,32 +42,44 @@ import phases
 import project
 import report
 import transcripts
-from common import USAGE_FILE, now_iso, write_atomic
+from common import LEGACY_REPORT_FILE, REPORT_FILE, USAGE_FILE, now_iso, write_atomic
 
 MARKETPLACE = "dev-workflow-plugins"
 MARKETPLACE_REPO = "muric-dev/dev-workflow-plugins"
 PLUGIN_ID = f"usage-ledger@{MARKETPLACE}"
 
 
+MIGRATION_NOTICES = {
+    "moved": f"usage-ledger: moved {LEGACY_REPORT_FILE} to {REPORT_FILE}.",
+    "removed": f"usage-ledger: removed {LEGACY_REPORT_FILE}; {REPORT_FILE} already exists and stays.",
+}
+
+
 def sync(root, only_session=None):
-    """Import transcripts into the ledger. Returns (usage.json was rewritten, new document)."""
+    """Import transcripts into the ledger.
+
+    Returns (usage.json was rewritten, new document, LEDGER.md migration notice or None).
+    """
     prices = measure.load_prices()
     questions = transcripts.read_questions(project.project_paths(root), only_session)
     fresh = [measure.build_record(question, prices) for question in questions.values()]
     old_doc = document.read_doc(root)
     doc = document.build_doc(old_doc, fresh, phases.read_phases(root), phases.read_categories(root), prices)
     changed = document.save_doc(root, old_doc, doc)
+    migration = report.migrate_report(root)
     report.write_report(root, doc)
     for model in measure.unpriced_models(fresh, prices):
         print(f"usage-ledger: no price for {model}; add it to {measure.PRICES_FILE}", file=sys.stderr)
-    return changed, doc
+    return changed, doc, MIGRATION_NOTICES.get(migration)
 
 
 # Commands. Each takes the parsed arguments and returns the exit code.
 
 
 def cmd_sync(args):
-    changed, doc = sync(args.root)
+    changed, doc, notice = sync(args.root)
+    if notice:
+        print(notice)
     totals = doc["totals"]
     state = "updated" if changed else "already up to date"
     print(f"{USAGE_FILE} {state}: {totals['questions']} questions, {totals['usd']:.2f} USD")
@@ -126,7 +139,9 @@ def cmd_init(args):
     if args.shared:
         enable_plugin_for_team(root / ".claude" / "settings.json")
         print(f"{PLUGIN_ID} enabled for the team in .claude/settings.json")
-    _, doc = sync(root)
+    _, doc, notice = sync(root)
+    if notice:
+        print(notice)
     print(f"Imported {doc['totals']['questions']} questions, {doc['totals']['usd']:.2f} USD")
     return 0
 
@@ -154,16 +169,18 @@ def late_rows_warning(root, doc, session):
 def cmd_hook(_args):
     """Never blocks the agent: exit 2 on Stop would send it back to work.
 
-    Prints a `systemMessage` for the user when late_rows_warning finds something.
+    Prints a `systemMessage` for the user when a root LEDGER.md was moved or removed,
+    or when late_rows_warning finds something.
     """
     try:
         payload = json.load(sys.stdin)
         root = project.find_root(payload.get("cwd") or Path.cwd())
         if root is not None:
-            _, doc = sync(root, payload.get("session_id"))
-            warning = late_rows_warning(root, doc, payload.get("session_id"))
-            if warning:
-                print(json.dumps({"systemMessage": warning}))
+            _, doc, notice = sync(root, payload.get("session_id"))
+            messages = [notice, late_rows_warning(root, doc, payload.get("session_id"))]
+            messages = [message for message in messages if message]
+            if messages:
+                print(json.dumps({"systemMessage": "\n".join(messages)}))
     except Exception as error:  # noqa: BLE001 - a broken ledger must not stop the session.
         print(f"usage-ledger: {error}", file=sys.stderr)
     return 0

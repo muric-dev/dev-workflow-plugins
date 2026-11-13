@@ -8,7 +8,8 @@ from pathlib import Path
 USAGE_FILE = Path("ledger/usage.json")  # saved records, written by document.py
 PHASES_FILE = Path("ledger/phases.csv")  # feature/phase timeline, owned by phases.py
 CATEGORIES_FILE = Path("ledger/categories.csv")  # question category timeline, owned by phases.py
-REPORT_FILE = Path("LEDGER.md")  # human summary, written by report.py
+REPORT_FILE = Path("ledger/LEDGER.md")  # human summary, written by report.py
+LEGACY_REPORT_FILE = Path("LEDGER.md")  # where versions up to 0.0.4 wrote it; report.py moves it
 
 UNASSIGNED = "unassigned"
 

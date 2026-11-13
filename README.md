@@ -6,7 +6,7 @@ Claude Code plugin marketplace with skills, agents and hooks for day-to-day deve
 
 | Plugin                                   | What it does                                                                                                                                                                                                                                 |
 |------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [`usage-ledger`](plugins/usage-ledger)   | Keeps `ledger/usage.json` and `LEDGER.md` in each project: Claude Code tokens, list-price cost and active time per question, attributed by feature and phase, split into work and questions, with optional categories. Needs `python3` 3.9+. |
+| [`usage-ledger`](plugins/usage-ledger)   | Keeps `ledger/usage.json` and `ledger/LEDGER.md` in each project: Claude Code tokens, list-price cost and active time per question, attributed by feature and phase, split into work and questions, with optional categories. Needs `python3` 3.9+. |
 | [`did-i-mess-up`](plugins/did-i-mess-up) | Installs a git `pre-commit` hook in Flutter/Dart repos: blocks debug leftovers, unformatted files, analyze or test failures, and asks Haiku whether you messed up. Run `/did-i-mess-up:did-i-mess-up install` once per clone.                |
 
 ## Install
